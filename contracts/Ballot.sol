@@ -1,8 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0
 
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
 pragma solidity >=0.7.0 <0.9.0;
+
+contract ERC20Mintable is ERC20, AccessControl {
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+        _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
+        _setupRole(MINTER_ROLE, _msgSender());
+    }
+
+    function mint(address to, uint256 amount) public {
+        require(hasRole(MINTER_ROLE, _msgSender()));
+        _mint(to, amount);
+    }
+}
 
 /** 
  * @title Ballot
@@ -10,10 +25,11 @@ pragma solidity >=0.7.0 <0.9.0;
  */
 contract BallotModified is AccessControl {
     bytes32 public constant CHAIRPERSON_ROLE = keccak256("CHAIRPERSON_ROLE");
+    uint256 public constant VOTE_UNITS = 1e18;
+    
+    address public votingTokenAddress;
    
     struct Voter {
-        uint weight; // weight is accumulated by delegation
-        bool voted;  // if true, that person already voted
         address delegate; // person delegated to
         uint vote;   // index of the voted proposal
     }
@@ -38,11 +54,9 @@ contract BallotModified is AccessControl {
     constructor(bytes32[] memory proposalNames) {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _setupRole(CHAIRPERSON_ROLE, msg.sender);
-        voters[chairperson].weight = 1;
+        ERC20Mintable votingTokenContract = new ERC20Mintable("Voting Ballot Token", "VBT");
+        votingTokenAddress = address(votingTokenContract);
         for (uint i = 0; i < proposalNames.length; i++) {
-            // 'Proposal({...})' creates a temporary
-            // Proposal object and 'proposals.push(...)'
-            // appends it to the end of 'proposals'.
             proposals.push(Proposal({
                 name: proposalNames[i],
                 voteCount: 0
@@ -56,41 +70,16 @@ contract BallotModified is AccessControl {
      */
     function giveRightToVote(address voter) public {
         require(hasRole(CHAIRPERSON_ROLE, msg.sender), "Caller is not a chairperson");
-        require(
-            !voters[voter].voted,
-            "The voter already voted."
-        );
-        require(voters[voter].weight == 0);
-        voters[voter].weight = 1;
+        require(ERC20Mintable(votingTokenAddress).balanceOf(voter) == 0);
+        ERC20Mintable(votingTokenAddress).mint(voter, VOTE_UNITS);
     }
 
     /**
      * @dev Delegate your vote to the voter 'to'.
      * @param to address to which vote is delegated
      */
-    function delegate(address to) public {
-        Voter storage sender = voters[msg.sender];
-        require(!sender.voted, "You already voted.");
-        require(to != msg.sender, "Self-delegation is disallowed.");
-
-        while (voters[to].delegate != address(0)) {
-            to = voters[to].delegate;
-
-            // We found a loop in the delegation, not allowed.
-            require(to != msg.sender, "Found loop in delegation.");
-        }
-        sender.voted = true;
-        sender.delegate = to;
-        Voter storage delegate_ = voters[to];
-        if (delegate_.voted) {
-            // If the delegate already voted,
-            // directly add to the number of votes
-            proposals[delegate_.vote].voteCount += sender.weight;
-        } else {
-            // If the delegate did not vote yet,
-            // add to her weight.
-            delegate_.weight += sender.weight;
-        }
+    function delegate(address to) public pure {
+        require(false, "Not implemented");
     }
 
     /**
@@ -99,15 +88,9 @@ contract BallotModified is AccessControl {
      */
     function vote(uint proposal) public {
         Voter storage sender = voters[msg.sender];
-        require(sender.weight != 0, "Has no right to vote");
-        require(!sender.voted, "Already voted.");
-        sender.voted = true;
+        ERC20Mintable(votingTokenAddress).transferFrom(_msgSender(), address(this), VOTE_UNITS);
         sender.vote = proposal;
-
-        // If 'proposal' is out of the range of the array,
-        // this will throw automatically and revert all
-        // changes.
-        proposals[proposal].voteCount += sender.weight;
+        proposals[proposal].voteCount += VOTE_UNITS;
     }
 
     /** 
